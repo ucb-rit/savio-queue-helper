@@ -32,7 +32,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build with PyInstaller
-        run: python -m pyinstaller --onefile sq.py
+        run: pyinstaller --onefile sq.py
       
       - name: Upload a Build Artifact
         uses: actions/upload-artifact@v2.1.4
