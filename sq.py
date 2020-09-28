@@ -48,7 +48,7 @@ def get_resv_df():
                 resvs[-1][key] =value
     print(pd.DataFrame(resvs))
 
-get_resv_df()
+# get_resv_df()
 
 def get_recent_jobs(username):
     last_week = datetime.date.today() - datetime.timedelta(days=7)
@@ -162,7 +162,7 @@ def identify_problems(pending_job, queue, qos_df, sprio_df):
     severity = SEVERITY['LOW']
     problems = []
     if pending_job['REASON'] in ['QOSGrpNodeLimit', 'QOSGrpCpuLimit']:
-        qos_df = qos_df.copy()
+
         qos_df = qos_df[qos_df['Name'] == pending_job['QOS']]
 
         qos_resource_limit = parse_tres(qos_df['GrpTRES'].values[0])
@@ -175,8 +175,9 @@ def identify_problems(pending_job, queue, qos_df, sprio_df):
 
         severity = max(severity, SEVERITY['MEDIUM'])
         problems.append(f"""This job is waiting until the QOS {pending_job['QOS']} has available resources.
-   This job is requesting {job_resources_requested}.
-   Other jobs in QOS {pending_job['QOS']} are using {qos_resources_used} of its limit of {qos_resource_limit_str}: {qos_running_jobs_str}
+   QOS limit: {qos_resource_limit_str}
+   QOS currently using: {qos_resources_used}: {qos_running_jobs_str}
+   This job is requesting: {job_resources_requested}.
    You may consider submitting with lowprio QOS, but then your job would be subject to preemption.""")
     if pending_job['REASON'] == 'Priority':
         severity = max(severity, SEVERITY['LOW'])
@@ -186,7 +187,7 @@ def identify_problems(pending_job, queue, qos_df, sprio_df):
         higher_prio_jobs = sprio_df[
             (sprio_df['PARTITION'] == pending_job['PARTITION']) & \
             ((sprio_df['PRIORITY'] > this_priority) | \
-             ((sprio_df['PRIORITY'] == this_priority) & (sprio_df['JOBID'] > pending_job['JOBID'])))]
+             ((sprio_df['PRIORITY'] == this_priority) & (sprio_df['JOBID'] < pending_job['JOBID'])))]
         problems.append(f"""This job is scheduled to run after {higher_prio_jobs.shape[0]} higher priority jobs.
    To get scheduled sooner, you can try reducing wall clock time as appropriate.""")
     if pending_job['REASON'] == 'Resources':
