@@ -35,6 +35,11 @@ def get_squeue_df():
 def get_sprio_df():
     return read_slurm_as_df(['sprio', '-o', '%A|%c|%F|%i|%J|%N|%Q|%r|%T|%u|%Y'])
 
+def get_sinfo_df():
+    df = read_slurm_as_df(['sinfo', '--format', '%all'])
+    df.columns = df.columns.str.strip()
+    return df
+
 def get_resv_df():
     stdout = subprocess.check_output(['scontrol', 'show', 'reservation']).decode('utf-8')
     resvs = []
@@ -42,13 +47,14 @@ def get_resv_df():
         if line and not line.startswith(' '):
             resvs.append({})
         for word in line.strip().split(' '):
-            print(word)
             key, value = word[:word.find('=')], word[word.find('=')+1:]
             if key and value:
                 resvs[-1][key] =value
-    print(pd.DataFrame(resvs))
-
-# get_resv_df()
+    df = pd.DataFrame(resvs)
+    df['Nodes'] = df['Nodes'].str.split(',')
+    df['StartTime'] = df['StartTime'].apply(datetime.datetime.fromisoformat)
+    df['EndTime'] = df['EndTime'].apply(datetime.datetime.fromisoformat)
+    return df
 
 def get_recent_jobs(username):
     last_week = datetime.date.today() - datetime.timedelta(days=7)
@@ -158,7 +164,63 @@ SEVERITY = {
     'HIGH': 2
 }
 
-def identify_problems(pending_job, queue, qos_df, sprio_df):
+def parse_timelimit(timelimit_str):
+    def safe_get(arr, i, default=0):
+        if len(arr) > i:
+            return i
+        return default
+
+    days, hours, minutes, seconds = 0, 1, 0, 0
+    days = timelimit_str.split('-')[0] if '-' in timelimit_str else 0
+    if '-' in timelimit_str:
+        days = int(timelimit_str.split('-')[0])
+        timelimit_str = timelimit_str.split('-')[1]
+    else:
+        days = 0
+    parts = timelimit_str.split(':')
+    hours, minutes, seconds = safe_get(parts, 2), safe_get(parts, 1), safe_get(parts, 0)
+    return datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+
+def check_resv_conflicts(pending_job, resv_df, sinfo_df):
+    req_nodes = pending_job['REQ_NODES'].split(',') if pending_job['REQ_NODES'] else []
+    num_nodes = int(pending_job['NODES'])
+    time_limit = parse_timelimit(pending_job['TIME_LIMIT'])
+    earliest_start = datetime.datetime.now()
+    earliest_end = datetime.datetime.now() + time_limit
+
+    # For each node slot, is there a node available to fill it that is not in a reservation?
+    # Check if each of the requested nodes does not intersect with a partition
+    #
+    # For the remaining slots which are not requested nodes,
+    # check if there are at least that many that are not overlapping with
+    # any of the interfering reservations
+
+    resvs = resv_df[
+        ((resv_df['StartTime'] <= earliest_start) & (resv_df['EndTime'] >= earliest_start))
+        | ((resv_df['StartTime'] <= earliest_end) & (resv_df['EndTime'] >= earliest_end))]
+
+    interfering_resvs = []
+    for node in req_nodes:
+        for _, resv in resvs.iterrows():
+            if node in resv['Nodes']:
+                interfering_resvs.append(resv)
+
+
+    possible_nodes = sinfo_df[sinfo_df['PARTITION'] == pending_job['PARTITION']]['NODELIST']
+    remaining_num_nodes = num_nodes - len(req_nodes)
+    non_resv_nodes = set(possible_nodes)
+    general_interfering_resvs = []
+    for _, resv in resvs.iterrows():
+        delta = set(resv['Nodes']).intersection(set(possible_nodes))
+        non_resv_nodes = non_resv_nodes - set(resv['Nodes'])
+        if delta:
+            general_interfering_resvs.append(resv)
+    if len(non_resv_nodes) >= remaining_num_nodes:
+        interfering_resvs += general_interfering_resvs
+
+    return interfering_resvs
+
+def identify_problems(pending_job, queue, qos_df, sprio_df, resv_df, sinfo_df):
     severity = SEVERITY['LOW']
     problems = []
     if pending_job['REASON'] in ['QOSGrpNodeLimit', 'QOSGrpCpuLimit']:
@@ -180,15 +242,27 @@ def identify_problems(pending_job, queue, qos_df, sprio_df):
    This job is requesting: {job_resources_requested}.
    You may consider submitting with lowprio QOS, but then your job would be subject to preemption.""")
     if pending_job['REASON'] == 'Priority':
-        severity = max(severity, SEVERITY['LOW'])
-        # pending_partition = queue[(queue['PARTITION'] == pending_job['PARTITION']) & (queue['STATE'] == 'PENDING')]
-        # pending_demand = display_grp_tres(sum_dicts(pending_partition.apply(parse_tres_queue_job, axis=1).values))
-        this_priority = sprio_df[sprio_df['JOBID'] == pending_job['JOBID_2']]['PRIORITY'].values[0]
-        higher_prio_jobs = sprio_df[
-            (sprio_df['PARTITION'] == pending_job['PARTITION']) & \
-            ((sprio_df['PRIORITY'] > this_priority) | \
-             ((sprio_df['PRIORITY'] == this_priority) & (sprio_df['JOBID'] < pending_job['JOBID'])))]
-        problems.append(f"""This job is scheduled to run after {higher_prio_jobs.shape[0]} higher priority jobs.
+        resv_conflicts = check_resv_conflicts(pending_job, resv_df, sinfo_df)
+        if resv_conflicts:
+            severity = max(severity, SEVERITY['HIGH'])
+            resvs = set([ (resv['ReservationName'], resv['StartTime'], resv['EndTime']) for resv in resv_conflicts ])
+            problems.append(f"""This job has a maximum time limit of {pending_job['TIME_LIMIT']}.
+   This job conflicts with the following reservations:\n""" +
+                            '\n'.join([ f'   - {resv[0]}: {resv[1]} to {resv[2]}' for resv in resvs ]) +
+                            """
+   This job will run AFTER the reservation.
+   Reservations are used for cluster maintenance.
+   If the reservation has not yet started, then you could decrease the wall-clock time for the job so it terminates before the reservation starts.""")
+        else:
+            severity = max(severity, SEVERITY['LOW'])
+            # pending_partition = queue[(queue['PARTITION'] == pending_job['PARTITION']) & (queue['STATE'] == 'PENDING')]
+            # pending_demand = display_grp_tres(sum_dicts(pending_partition.apply(parse_tres_queue_job, axis=1).values))
+            this_priority = sprio_df[sprio_df['JOBID'] == pending_job['JOBID_2']]['PRIORITY'].values[0]
+            higher_prio_jobs = sprio_df[
+                (sprio_df['PARTITION'] == pending_job['PARTITION']) & \
+                ((sprio_df['PRIORITY'] > this_priority) | \
+                ((sprio_df['PRIORITY'] == this_priority) & (sprio_df['JOBID'] < pending_job['JOBID'])))]
+            problems.append(f"""This job is scheduled to run after {higher_prio_jobs.shape[0]} higher priority jobs.
    To get scheduled sooner, you can try reducing wall clock time as appropriate.""")
     if pending_job['REASON'] == 'Resources':
         severity = max(severity, SEVERITY['LOW'])
@@ -206,8 +280,8 @@ def display_queued_jobs(username, squeue):
     num_pending_jobs = df[df['STATE'] == 'PENDING'].shape[0]
     print(f"You have {num_running_jobs} running {'job' if num_running_jobs == 1 else 'jobs'} and {num_pending_jobs} pending {'job' if num_pending_jobs == 1 else 'jobs'} (most recent job first):")
     df['STATE'] = df['STATE'].apply(color_state)
-    qos_df, sprio_df = get_qos_df(), get_sprio_df()
-    df['PROBLEMS'] = df.apply(lambda pending_job: identify_problems(pending_job, squeue, qos_df, sprio_df), axis=1)
+    qos_df, sprio_df, resv_df, sinfo_df = get_qos_df(), get_sprio_df(), get_resv_df(), get_sinfo_df()
+    df['PROBLEMS'] = df.apply(lambda pending_job: identify_problems(pending_job, squeue, qos_df, sprio_df, resv_df, sinfo_df), axis=1)
     df['JOBID'] = df.apply(display_job_id, axis=1)
     print(get_table(df[['JOBID', 'NAME', 'ACCOUNT', 'PARTITION (N)', 'QOS', 'TIME', 'STATE', 'REASON']]))
 
@@ -227,7 +301,7 @@ squeue = get_squeue_df()
 # username = squeue[(squeue['REASON'] == 'QOSGrpNodeLimit') & (squeue['STATE'] == 'PENDING')]['USER'].values[0]
 username = args.user
 
-print(username)
+print('Showing results for', username)
 
 if squeue[squeue['USER'] == username].shape[0] == 0: # check number of rows in current_queue
     print('You have no running or queued jobs.')
