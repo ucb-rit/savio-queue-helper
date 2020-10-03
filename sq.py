@@ -239,7 +239,7 @@ def identify_problems(pending_job, queue, qos_df, sprio_df, resv_df, sinfo_df):
         problems.append(f"""This job is waiting until the QOS {pending_job['QOS']} has available resources.
    QOS limit: {qos_resource_limit_str}
    QOS currently using: {qos_resources_used}: {qos_running_jobs_str}
-   This job is requesting: {job_resources_requested}.
+   This job is requesting: {job_resources_requested}
    You may consider submitting with lowprio QOS, but then your job would be subject to preemption.""")
     if pending_job['REASON'] == 'Priority':
         resv_conflicts = check_resv_conflicts(pending_job, resv_df, sinfo_df)
