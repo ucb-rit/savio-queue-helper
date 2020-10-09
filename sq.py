@@ -56,9 +56,10 @@ def get_resv_df():
     df['EndTime'] = df['EndTime'].apply(datetime.datetime.fromisoformat)
     return df
 
-def get_recent_jobs(username):
-    last_week = datetime.date.today() - datetime.timedelta(days=7)
-    df = read_slurm_as_df(['sacct', '-u', username, '-P', '--format', 'ALL', '-S', last_week.isoformat()])
+def get_recent_jobs(username, start_time=None):
+    last_week = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+    start_time = start_time or last_week
+    df = read_slurm_as_df(['sacct', '-u', username, '-P', '--format', 'ALL', '-S', start_time])
     return df[~df['JobID'].str.endswith('.batch')]
 
 def get_table(df):
@@ -92,7 +93,7 @@ def display_time(time):
 
 def display_recent_jobs(sacct):
     df = sacct.copy()
-    df['Partition'] = df['Partition'] + ' (' + df['NNodes'] + ')'
+    df['Partition'] = df['NNodes'] + 'x ' + df['Partition']
     df['State'] = df['State'].apply(color_state)
     df['End'] = df['End'].str.replace('T', ' ')
     df = df[['JobID', 'JobName', 'Account', 'Partition', 'Elapsed', 'End', 'State']].sort_values(by='End', ascending=False)
@@ -269,10 +270,10 @@ def identify_problems(pending_job, queue, qos_df, sprio_df, resv_df, sinfo_df):
         problems.append(f"""This job is next in priority and is waiting for resources to become available on the {pending_job['PARTITION']} partition.""")
     return severity, problems
 
-def display_queued_jobs(username, squeue):
+def display_queued_jobs(username, squeue, quiet):
     df = squeue.copy()
     df = df[df['USER'] == username]
-    df['PARTITION (N)'] = df['PARTITION'] + ' (' + df['NODES'] + ')'
+    df['Partition'] = df['NODES'] + 'x ' + df['PARTITION']
     df['REASON'] = df['REASON'].apply(color_reason)
     df['TIME'] = df['TIME'].apply(display_time)
     df = df.sort_values(by='JOBID', ascending=False)
@@ -283,17 +284,21 @@ def display_queued_jobs(username, squeue):
     qos_df, sprio_df, resv_df, sinfo_df = get_qos_df(), get_sprio_df(), get_resv_df(), get_sinfo_df()
     df['PROBLEMS'] = df.apply(lambda pending_job: identify_problems(pending_job, squeue, qos_df, sprio_df, resv_df, sinfo_df), axis=1)
     df['JOBID'] = df.apply(display_job_id, axis=1)
-    print(get_table(df[['JOBID', 'NAME', 'ACCOUNT', 'PARTITION (N)', 'QOS', 'TIME', 'STATE', 'REASON']]))
+    print(get_table(df[['JOBID', 'NAME', 'ACCOUNT', 'Partition', 'QOS', 'TIME', 'STATE', 'REASON']]))
 
-    problem_jobs = df[df['PROBLEMS'].apply(lambda p: len(p[1]) > 0)]
-    for _, job in problem_jobs.iterrows():
-        print('\n' + job['JOBID'] + ':')
-        severity, problems = job['PROBLEMS']
-        for problem in problems:
-            print(' -', problem)
+    if not quiet:
+        problem_jobs = df[df['PROBLEMS'].apply(lambda p: len(p[1]) > 0)]
+        for _, job in problem_jobs.iterrows():
+            print('\n' + job['JOBID'] + ':')
+            severity, problems = job['PROBLEMS']
+            for problem in problems:
+                print(' -', problem)
 
 parser = argparse.ArgumentParser(description='Display pending job/queue info in a helpful way.')
 parser.add_argument('-u', '--user', help='Set username to check (default is current user)', default=getpass.getuser())
+parser.add_argument('-a', '--all-jobs', dest='all_jobs', default=False, action='store_true', help='Show current and past jobs for selected user')
+parser.add_argument('-q', '--quiet', dest='quiet', default=False, action='store_true', help='Suppress job issue messages')
+parser.add_argument('-S', '--start-time', dest='start_time', help='Filter for jobs created after specified start time', type=str, default=None)
 args = parser.parse_args()
 
 squeue = get_squeue_df()
@@ -303,8 +308,10 @@ username = args.user
 
 print('Showing results for', username)
 
-if squeue[squeue['USER'] == username].shape[0] == 0: # check number of rows in current_queue
-    print('You have no running or queued jobs.')
-    display_recent_jobs(get_recent_jobs(username))
+has_current_jobs = squeue[squeue['USER'] == username].shape[0] > 0
+if has_current_jobs:
+    display_queued_jobs(username, squeue, args.quiet)
 else:
-    display_queued_jobs(username, squeue)
+    print('You have no running or queued jobs.')
+if args.all_jobs or (not has_current_jobs):
+    display_recent_jobs(get_recent_jobs(username, args.start_time))
