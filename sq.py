@@ -309,9 +309,9 @@ username = args.user
 print('Showing results for', username)
 
 has_current_jobs = squeue[squeue['USER'] == username].shape[0] > 0
-if has_current_jobs:
+if has_current_jobs and (not args.all_jobs):
     display_queued_jobs(username, squeue, args.quiet)
-else:
+elif (not args.all_jobs):
     print('You have no running or queued jobs.')
 if args.all_jobs or (not has_current_jobs):
     display_recent_jobs(get_recent_jobs(username, args.start_time))
