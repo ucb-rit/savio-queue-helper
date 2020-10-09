@@ -264,6 +264,7 @@ def identify_problems(pending_job, queue, qos_df, sprio_df, resv_df, sinfo_df):
                 ((sprio_df['PRIORITY'] > this_priority) | \
                 ((sprio_df['PRIORITY'] == this_priority) & (sprio_df['JOBID'] < pending_job['JOBID'])))]
             problems.append(f"""This job is scheduled to run after {higher_prio_jobs.shape[0]} higher priority jobs.
+   Estimated start time: {pending_job['START_TIME']}
    To get scheduled sooner, you can try reducing wall clock time as appropriate.""")
     if pending_job['REASON'] == 'Resources':
         severity = max(severity, SEVERITY['LOW'])
