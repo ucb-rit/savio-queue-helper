@@ -148,7 +148,7 @@ def display_recent_jobs(sacct, quiet):
     df['Partition'] = df['NNodes'] + 'x ' + df['Partition']
     df['State'] = df['State'].apply(color_state)
     df['End'] = df['End'].str.replace('T', ' ')
-    df = df[['JobID', 'JobName', 'Account', 'Partition', 'Elapsed', 'End', 'State']].sort_values(by='End', ascending=False)
+    df = df[['Job ID', 'JobName', 'Account', 'Partition', 'Elapsed', 'End', 'State']].sort_values(by='End', ascending=False)
     if df.shape[0] == 0:
         print('You have no recent jobs (within the last week).')
     else:
@@ -157,13 +157,8 @@ def display_recent_jobs(sacct, quiet):
         # print('For more information about a previous job, run:', 'sacct -j $JOB_ID')
 
     df = sacct.copy()
-    if not quiet:
-        problem_jobs = df[df['PROBLEMS'].apply(lambda p: len(p[1]) > 0)]
-        for _, job in problem_jobs.iterrows():
-            print('\n' + job['JobID'] + ':')
-            severity, problems = job['PROBLEMS']
-            for problem in problems:
-                print(' -', problem)
+    df['JOBID'] = df['JobID']
+    display_problems(df, quiet)
 
 
 def display_job_id(pending_job):
@@ -357,11 +352,13 @@ def display_queued_jobs(username, slurm_info, quiet):
     display_df['Reason'] = df['REASON'].apply(color_reason)
 
     print(get_table(display_df))
+    display_problems(df, quiet)
 
+def display_problems(df, quiet):
     if not quiet:
         problem_jobs = df[df['PROBLEMS'].apply(lambda p: len(p[1]) > 0)]
         for _, job in problem_jobs.iterrows():
-            print('\n' + job['JOBID'] + ':')
+            print('\n' + display_job_id(job) + ':')
             severity, problems = job['PROBLEMS']
             for problem in problems:
                 print(' -', problem)
