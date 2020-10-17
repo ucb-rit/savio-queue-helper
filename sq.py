@@ -398,13 +398,14 @@ elif (not args.all_jobs):
     print('You have no running or queued jobs.')
 
 recent_jobs = get_recent_jobs(username, args.start_time, args.limit)
-recent_jobs['PROBLEMS'] = recent_jobs.apply(identify_problems_completed(slurm_info), axis=1)
+if recent_jobs.shape[0]:
+    recent_jobs['PROBLEMS'] = recent_jobs.apply(identify_problems_completed(slurm_info), axis=1)
 
-recent_completed = recent_jobs[recent_jobs['State'] == 'COMPLETED'].sort_values(by='End', ascending=False).head(1)
-has_problems = recent_completed[recent_completed['PROBLEMS'].apply(lambda problems: len(problems[1]) > 0)]
+    recent_completed = recent_jobs[recent_jobs['State'] == 'COMPLETED'].sort_values(by='End', ascending=False).head(1)
+    has_problems = recent_completed[recent_completed['PROBLEMS'].apply(lambda problems: len(problems[1]) > 0)]
 
-if args.all_jobs or (not slurm_info.has_current_jobs(username)):
-    display_recent_jobs(recent_jobs, args.quiet)
-elif has_problems.shape[0]:
-    # just show the most recent one with the problem
-    display_recent_jobs(recent_completed, args.quiet)
+    if args.all_jobs or (not slurm_info.has_current_jobs(username)):
+        display_recent_jobs(recent_jobs, args.quiet)
+    elif has_problems.shape[0]:
+        # just show the most recent one with the problem
+        display_recent_jobs(recent_completed, args.quiet)
