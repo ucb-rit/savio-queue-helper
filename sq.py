@@ -35,6 +35,9 @@ def get_squeue_df():
 def get_sprio_df():
     return read_slurm_as_df(['sprio', '-o', '%A|%c|%F|%i|%J|%N|%Q|%r|%T|%u|%Y'])
 
+def get_assoc_df():
+    return read_slurm_as_df(['sacctmgr', '-p', 'show', 'associations'])
+
 def get_sinfo_df():
     df = read_slurm_as_df(['sinfo', '--format', '%all'])
     df.columns = df.columns.str.strip()
@@ -56,11 +59,58 @@ def get_resv_df():
     df['EndTime'] = df['EndTime'].apply(datetime.datetime.fromisoformat)
     return df
 
-def get_recent_jobs(username, start_time=None):
+def get_recent_jobs(username, start_time=None, limit=-1):
     last_week = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
     start_time = start_time or last_week
-    df = read_slurm_as_df(['sacct', '-u', username, '-P', '--format', 'ALL', '-S', start_time])
-    return df[~df['JobID'].str.endswith('.batch')]
+    df = read_slurm_as_df(['sacct', '-u', username, '-P', '--format', 'ALL', '-S', start_time])\
+        .sort_values(by='End', ascending=False)
+    df = df[~df['JobID'].str.endswith('.batch')]
+    if limit >= 0:
+        df = df.head(limit)
+    return df
+
+def cache_property(f):
+    cached = None
+    def inner(self):
+        nonlocal cached
+        if cached is None:
+            cached = f()
+        return cached
+    return inner
+
+class SlurmInfo:
+    @cache_property
+    def squeue_df():
+        return get_squeue_df()
+
+    @cache_property
+    def qos_df():
+        return get_qos_df()
+
+    @cache_property
+    def sprio_df():
+        return get_sprio_df()
+
+    @cache_property
+    def resv_df():
+        return get_resv_df()
+
+    @cache_property
+    def sinfo_df():
+        return get_sinfo_df()
+    
+    @cache_property
+    def assoc_df():
+        return get_assoc_df()
+
+    def has_current_jobs(self, username):
+        return self.squeue_df()[self.squeue_df()['USER'] == username].shape[0] > 0
+    def available_qos(self, username, account, partition):
+        return self.assoc_df()[
+            (self.assoc_df()['User'] == username) &
+            (self.assoc_df()['Account'] == account) &
+            (self.assoc_df()['Partition'] == partition)
+        ]['QOS'].str.split(',').values[0]
 
 def get_table(df):
     return tabulate(df, df.columns, tablefmt='pretty', showindex='never')
@@ -91,8 +141,10 @@ def color_reason(reason):
 def display_time(time):
     return '' if time == '0:00' else time
 
-def display_recent_jobs(sacct):
+def display_recent_jobs(sacct, quiet):
     df = sacct.copy()
+    df['JOBID'] = df['JobID']
+    df['Job ID'] = df.apply(display_job_id, axis=1)
     df['Partition'] = df['NNodes'] + 'x ' + df['Partition']
     df['State'] = df['State'].apply(color_state)
     df['End'] = df['End'].str.replace('T', ' ')
@@ -103,6 +155,16 @@ def display_recent_jobs(sacct):
         print('Your recent jobs (most recent job first):')
         print(get_table(df))
         # print('For more information about a previous job, run:', 'sacct -j $JOB_ID')
+
+    df = sacct.copy()
+    if not quiet:
+        problem_jobs = df[df['PROBLEMS'].apply(lambda p: len(p[1]) > 0)]
+        for _, job in problem_jobs.iterrows():
+            print('\n' + job['JobID'] + ':')
+            severity, problems = job['PROBLEMS']
+            for problem in problems:
+                print(' -', problem)
+
 
 def display_job_id(pending_job):
     SEVERITY_COLORS = {
@@ -168,10 +230,10 @@ SEVERITY = {
 def parse_timelimit(timelimit_str):
     def safe_get(arr, i, default=0):
         if len(arr) > i:
-            return i
+            return int(arr[i])
         return default
 
-    days, hours, minutes, seconds = 0, 1, 0, 0
+    days, hours, minutes, seconds = 0, 0, 0, 0
     days = timelimit_str.split('-')[0] if '-' in timelimit_str else 0
     if '-' in timelimit_str:
         days = int(timelimit_str.split('-')[0])
@@ -179,7 +241,7 @@ def parse_timelimit(timelimit_str):
     else:
         days = 0
     parts = timelimit_str.split(':')
-    hours, minutes, seconds = safe_get(parts, 2), safe_get(parts, 1), safe_get(parts, 0)
+    hours, minutes, seconds = safe_get(parts, 0), safe_get(parts, 1), safe_get(parts, 2)
     return datetime.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
 def check_resv_conflicts(pending_job, resv_df, sinfo_df):
@@ -221,71 +283,80 @@ def check_resv_conflicts(pending_job, resv_df, sinfo_df):
 
     return interfering_resvs
 
-def identify_problems(pending_job, queue, qos_df, sprio_df, resv_df, sinfo_df):
-    severity = SEVERITY['LOW']
-    problems = []
-    if pending_job['REASON'] in ['QOSGrpNodeLimit', 'QOSGrpCpuLimit']:
+def identify_problems(slurm_info):
+    def inner(pending_job):
+        severity = SEVERITY['LOW']
+        problems = []
+        if pending_job['REASON'] in ['QOSGrpNodeLimit', 'QOSGrpCpuLimit']:
+            qos_df = slurm_info.qos_df()
+            queue = slurm_info.squeue_df()
+            qos_df = qos_df[qos_df['Name'] == pending_job['QOS']]
 
-        qos_df = qos_df[qos_df['Name'] == pending_job['QOS']]
+            qos_resource_limit = parse_tres(qos_df['GrpTRES'].values[0])
+            qos_resource_limit_str = display_grp_tres(parse_tres(qos_df['GrpTRES'].values[0]))
+            qos_running_jobs = queue[(queue['QOS'] == pending_job['QOS']) & (queue['STATE'] == 'RUNNING')]
+            qos_running_jobs_str = ', '.join(qos_running_jobs['JOBID'] + ' (' + qos_running_jobs.apply(lambda x: filter_keys(qos_resource_limit, parse_tres_queue_job(x)), axis=1).apply(display_grp_tres) + ')')
 
-        qos_resource_limit = parse_tres(qos_df['GrpTRES'].values[0])
-        qos_resource_limit_str = display_grp_tres(parse_tres(qos_df['GrpTRES'].values[0]))
-        qos_running_jobs = queue[(queue['QOS'] == pending_job['QOS']) & (queue['STATE'] == 'RUNNING')]
-        qos_running_jobs_str = ', '.join(qos_running_jobs['JOBID'] + ' (' + qos_running_jobs.apply(lambda x: filter_keys(qos_resource_limit, parse_tres_queue_job(x)), axis=1).apply(display_grp_tres) + ')')
+            qos_resources_used = display_grp_tres(filter_keys(qos_resource_limit, sum_dicts(qos_running_jobs.apply(parse_tres_queue_job, axis=1))))
+            job_resources_requested = display_grp_tres(filter_keys(qos_resource_limit, parse_tres_queue_job(pending_job)))
 
-        qos_resources_used = display_grp_tres(filter_keys(qos_resource_limit, sum_dicts(qos_running_jobs.apply(parse_tres_queue_job, axis=1))))
-        job_resources_requested = display_grp_tres(filter_keys(qos_resource_limit, parse_tres_queue_job(pending_job)))
+            available_qos = slurm_info.available_qos(pending_job['USER'], pending_job['ACCOUNT'], pending_job['PARTITION'])
+            available_qos.remove(pending_job['QOS'])
+            other_qos = f"\n    You may consider submitting with these other QOS: {', '.join(available_qos)}" if available_qos else ''
 
-        severity = max(severity, SEVERITY['MEDIUM'])
-        problems.append(f"""This job is waiting until the QOS {pending_job['QOS']} has available resources.
-   QOS limit: {qos_resource_limit_str}
-   QOS currently using: {qos_resources_used}: {qos_running_jobs_str}
-   This job is requesting: {job_resources_requested}
-   You may consider submitting with lowprio QOS, but then your job would be subject to preemption.""")
-    if pending_job['REASON'] == 'Priority':
-        resv_conflicts = check_resv_conflicts(pending_job, resv_df, sinfo_df)
-        if resv_conflicts:
-            severity = max(severity, SEVERITY['HIGH'])
-            resvs = set([ (resv['ReservationName'], resv['StartTime'], resv['EndTime']) for resv in resv_conflicts ])
-            problems.append(f"""This job has a maximum time limit of {pending_job['TIME_LIMIT']}.
-   This job conflicts with the following reservations:\n""" +
-                            '\n'.join([ f'   - {resv[0]}: {resv[1]} to {resv[2]}' for resv in resvs ]) +
-                            """
-   This job will run AFTER the reservation.
-   Reservations are used for cluster maintenance.
-   If the reservation has not yet started, then you could decrease the wall-clock time for the job so it terminates before the reservation starts.""")
-        else:
-            severity = max(severity, SEVERITY['LOW'])
-            # pending_partition = queue[(queue['PARTITION'] == pending_job['PARTITION']) & (queue['STATE'] == 'PENDING')]
-            # pending_demand = display_grp_tres(sum_dicts(pending_partition.apply(parse_tres_queue_job, axis=1).values))
-            this_priority = sprio_df[sprio_df['JOBID'] == pending_job['JOBID_2']]['PRIORITY'].values[0]
-            higher_prio_jobs = sprio_df[
-                (sprio_df['PARTITION'] == pending_job['PARTITION']) & \
-                ((sprio_df['PRIORITY'] > this_priority) | \
-                ((sprio_df['PRIORITY'] == this_priority) & (sprio_df['JOBID'] < pending_job['JOBID'])))]
-            problems.append(f"""This job is scheduled to run after {higher_prio_jobs.shape[0]} higher priority jobs.
-   Estimated start time: {pending_job['START_TIME']}
-   To get scheduled sooner, you can try reducing wall clock time as appropriate.""")
-    if pending_job['REASON'] == 'Resources':
-        severity = max(severity, SEVERITY['LOW'])
-        problems.append(f"""This job is next in priority and is waiting for resources to become available on the {pending_job['PARTITION']} partition.""")
-    return severity, problems
+            severity = max(severity, SEVERITY['MEDIUM'])
+            problems.append(f"""This job is waiting until the QOS {pending_job['QOS']} has available resources.
+    QOS limit: {qos_resource_limit_str}
+    QOS currently using: {qos_resources_used}: {qos_running_jobs_str}
+    This job is requesting: {job_resources_requested} {other_qos}""")
+        if pending_job['REASON'] in ['Priority', 'Resources']:
+            sprio_df = slurm_info.sprio_df()
+            resv_conflicts = check_resv_conflicts(pending_job, slurm_info.resv_df(), slurm_info.sinfo_df())
+            if resv_conflicts:
+                severity = max(severity, SEVERITY['HIGH'])
+                resvs = set([ (resv['ReservationName'], resv['StartTime'], resv['EndTime']) for resv in resv_conflicts ])
+                problems.append(f"""This job has a maximum time limit of {pending_job['TIME_LIMIT']}.
+    This job conflicts with the following reservations:\n""" +
+                                '\n'.join([ f'   - {resv[0]}: {resv[1]} to {resv[2]}' for resv in resvs ]) +
+                                """
+    This job will run AFTER the reservation.
+    Reservations are used for cluster maintenance.
+    If the reservation has not yet started, then you could decrease the wall-clock time for the job so it terminates before the reservation starts.""")
+            else:
+                severity = max(severity, SEVERITY['LOW'])
+                # pending_partition = queue[(queue['PARTITION'] == pending_job['PARTITION']) & (queue['STATE'] == 'PENDING')]
+                # pending_demand = display_grp_tres(sum_dicts(pending_partition.apply(parse_tres_queue_job, axis=1).values))
+                this_priority = sprio_df[sprio_df['JOBID'] == pending_job['JOBID_2']]['PRIORITY'].values[0]
+                higher_prio_jobs = sprio_df[
+                    (sprio_df['PARTITION'] == pending_job['PARTITION']) & \
+                    ((sprio_df['PRIORITY'] > this_priority) | \
+                    ((sprio_df['PRIORITY'] == this_priority) & (sprio_df['JOBID'] < pending_job['JOBID'])))]
+                problems.append(f"""This job is scheduled to run after {higher_prio_jobs.shape[0]} higher priority jobs.
+    Estimated start time: {pending_job['START_TIME']}
+    To get scheduled sooner, you can try reducing wall clock time as appropriate.""")
+        return severity, problems
+    return inner
 
-def display_queued_jobs(username, squeue, quiet):
-    df = squeue.copy()
+def display_queued_jobs(username, slurm_info, quiet):
+    df = slurm_info.squeue_df().copy()
     df = df[df['USER'] == username]
-    df['Partition'] = df['NODES'] + 'x ' + df['PARTITION']
-    df['REASON'] = df['REASON'].apply(color_reason)
-    df['TIME'] = df['TIME'].apply(display_time)
-    df = df.sort_values(by='JOBID', ascending=False)
+    df['PROBLEMS'] = df.apply(identify_problems(slurm_info), axis=1)
+
     num_running_jobs = df[df['STATE'] == 'RUNNING'].shape[0]
     num_pending_jobs = df[df['STATE'] == 'PENDING'].shape[0]
     print(f"You have {num_running_jobs} running {'job' if num_running_jobs == 1 else 'jobs'} and {num_pending_jobs} pending {'job' if num_pending_jobs == 1 else 'jobs'} (most recent job first):")
-    df['STATE'] = df['STATE'].apply(color_state)
-    qos_df, sprio_df, resv_df, sinfo_df = get_qos_df(), get_sprio_df(), get_resv_df(), get_sinfo_df()
-    df['PROBLEMS'] = df.apply(lambda pending_job: identify_problems(pending_job, squeue, qos_df, sprio_df, resv_df, sinfo_df), axis=1)
-    df['JOBID'] = df.apply(display_job_id, axis=1)
-    print(get_table(df[['JOBID', 'NAME', 'ACCOUNT', 'Partition', 'QOS', 'TIME', 'STATE', 'REASON']]))
+
+    display_df = pd.DataFrame()
+    display_df['Job ID'] = df.apply(display_job_id, axis=1)
+    display_df['Name'] = df['NAME']
+    display_df['Account'] = df['ACCOUNT']
+    display_df['Partition'] = df['NODES'] + 'x ' + df['PARTITION']
+    display_df['QOS'] = df['QOS']
+    display_df['Time'] = df['TIME']
+    display_df['State'] = df['STATE'].apply(color_state)
+    display_df['Reason'] = df['REASON'].apply(color_reason)
+
+    print(get_table(display_df))
 
     if not quiet:
         problem_jobs = df[df['PROBLEMS'].apply(lambda p: len(p[1]) > 0)]
@@ -295,24 +366,45 @@ def display_queued_jobs(username, squeue, quiet):
             for problem in problems:
                 print(' -', problem)
 
+def identify_problems_completed(slurm_info):
+    def inner(completed_job):
+        severity = SEVERITY['LOW']
+        problems = []
+        elapsed_time = parse_timelimit(completed_job['Elapsed'])
+        if elapsed_time < datetime.timedelta(minutes=5):
+            severity = max(severity, SEVERITY['MEDIUM'])
+            problems.append(f"This job ran for only {elapsed_time}")
+        return severity, problems
+    return inner
+
 parser = argparse.ArgumentParser(description='Display pending job/queue info in a helpful way.')
 parser.add_argument('-u', '--user', help='Set username to check (default is current user)', default=getpass.getuser())
 parser.add_argument('-a', '--all-jobs', dest='all_jobs', default=False, action='store_true', help='Show current and past jobs for selected user')
 parser.add_argument('-q', '--quiet', dest='quiet', default=False, action='store_true', help='Suppress job issue messages')
 parser.add_argument('-S', '--start-time', dest='start_time', help='Filter for jobs created after specified start time', type=str, default=None)
+parser.add_argument('-n', '--limit', dest='limit', type=int, default=8, help='Limit number of jobs in job history table (unlimited = -1, default = 8)')
 args = parser.parse_args()
 
-squeue = get_squeue_df()
+slurm_info = SlurmInfo()
 
-# username = squeue[(squeue['REASON'] == 'QOSGrpNodeLimit') & (squeue['STATE'] == 'PENDING')]['USER'].values[0]
 username = args.user
 
 print('Showing results for', username)
 
-has_current_jobs = squeue[squeue['USER'] == username].shape[0] > 0
-if has_current_jobs and (not args.all_jobs):
-    display_queued_jobs(username, squeue, args.quiet)
+if slurm_info.has_current_jobs(username) and (not args.all_jobs):
+    display_queued_jobs(username, slurm_info, args.quiet)
+    print()
 elif (not args.all_jobs):
     print('You have no running or queued jobs.')
-if args.all_jobs or (not has_current_jobs):
-    display_recent_jobs(get_recent_jobs(username, args.start_time))
+
+recent_jobs = get_recent_jobs(username, args.start_time, args.limit)
+recent_jobs['PROBLEMS'] = recent_jobs.apply(identify_problems_completed(slurm_info), axis=1)
+
+recent_completed = recent_jobs[recent_jobs['State'] == 'COMPLETED'].sort_values(by='End', ascending=False).head(1)
+has_problems = recent_completed[recent_completed['PROBLEMS'].apply(lambda problems: len(problems[1]) > 0)]
+
+if args.all_jobs or (not slurm_info.has_current_jobs(username)):
+    display_recent_jobs(recent_jobs, args.quiet)
+elif has_problems.shape[0]:
+    # just show the most recent one with the problem
+    display_recent_jobs(recent_completed, args.quiet)
