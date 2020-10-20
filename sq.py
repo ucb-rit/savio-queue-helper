@@ -278,10 +278,43 @@ def check_resv_conflicts(pending_job, resv_df, sinfo_df):
 
     return interfering_resvs
 
+def suggest_other_qos(slurm_info, pending_job):
+    available_qos = slurm_info.available_qos(pending_job['USER'], pending_job['ACCOUNT'], pending_job['PARTITION'])
+    available_qos.remove(pending_job['QOS'])
+    return display_qos_suggestion(available_qos)
+
+def display_qos_suggestion(available_qos):
+    return f"You may consider submitting with these other QOS: {', '.join(available_qos)}" if available_qos else ''
+
 def identify_problems(slurm_info):
     def inner(pending_job):
         severity = SEVERITY['LOW']
         problems = []
+        if pending_job['REASON'] in ['QOSMaxWallDurationPerJobLimit']:
+            qos = slurm_info.qos_df()[slurm_info.qos_df()['Name'] == pending_job['QOS']].iloc[0]
+            job_wall_time = pending_job['TIME_LIMIT']
+            severity = max(severity, SEVERITY['HIGH'])
+            problems.append([
+                f"This job will not run because its time limit exceeds the maximum time limit for jobs under the QOS {pending_job['QOS']}.",
+                f"QOS maximum time limit: {qos['MaxWall']}",
+                f"This job time limit: {job_wall_time}",
+                "You should cancel this job and resubmit with a lower wall clock time limit or use a different QOS with a higher allowed time limit.",
+                # TODO: suggest QOS with higher time if applicable
+            ])
+        if pending_job['REASON'] in ['QOSMaxCpuPerJobLimit', 'QOSMaxNodePerJobLimit']:
+            qos = slurm_info.qos_df()[slurm_info.qos_df()['Name'] == pending_job['QOS']].iloc[0]
+            qos_resource_limit = parse_tres(qos['MaxTRES'])
+            qos_resource_limit_str = display_grp_tres(qos_resource_limit)
+            job_resources_requested = display_grp_tres(filter_keys(qos_resource_limit, parse_tres_queue_job(pending_job)))
+
+            severity = max(severity, SEVERITY['HIGH'])
+            problems.append([
+                f"This job will not run because it is requesting more resources than is allowed per job under the QOS {pending_job['QOS']}.",
+                f"QOS per job resource limit: {qos_resource_limit_str}",
+                f"This job is requesting: {job_resources_requested}",
+                "You should cancel this job and resubmit with lower resource requirements or use a different QOS.",
+                suggest_other_qos(slurm_info, pending_job)
+            ])
         if pending_job['REASON'] in ['QOSGrpNodeLimit', 'QOSGrpCpuLimit']:
             qos_df = slurm_info.qos_df()
             queue = slurm_info.squeue_df()
@@ -300,10 +333,13 @@ def identify_problems(slurm_info):
             other_qos = f"\n    You may consider submitting with these other QOS: {', '.join(available_qos)}" if available_qos else ''
 
             severity = max(severity, SEVERITY['MEDIUM'])
-            problems.append(f"""This job is waiting until the QOS {pending_job['QOS']} has available resources.
-    QOS limit: {qos_resource_limit_str}
-    QOS currently using: {qos_resources_used}: {qos_running_jobs_str}
-    This job is requesting: {job_resources_requested} {other_qos}""")
+            problems.append([
+                f"This job is waiting until the QOS {pending_job['QOS']} has available resources.",
+                f"QOS resource limit: {qos_resource_limit_str}",
+                f"QOS currently using: {qos_resources_used}: {qos_running_jobs_str}",
+                f"This job is requesting: {job_resources_requested}",
+                suggest_other_qos(slurm_info, pending_job)
+            ])
         if pending_job['REASON'] in ['Priority', 'Resources']:
             sprio_df = slurm_info.sprio_df()
             resv_conflicts = check_resv_conflicts(pending_job, slurm_info.resv_df(), slurm_info.sinfo_df())
@@ -361,7 +397,7 @@ def display_problems(df, quiet):
             print('\n' + display_job_id(job) + ':')
             severity, problems = job['PROBLEMS']
             for problem in problems:
-                print(' -', problem)
+                print(' - ' + '\n   '.join([ p for p in problem if p ]) if type(problem) == list else problem)
 
 def identify_problems_completed(slurm_info):
     def inner(completed_job):
@@ -370,7 +406,9 @@ def identify_problems_completed(slurm_info):
         elapsed_time = parse_timelimit(completed_job['Elapsed'])
         if elapsed_time < datetime.timedelta(minutes=5):
             severity = max(severity, SEVERITY['MEDIUM'])
-            problems.append(f"This job ran for only {elapsed_time}")
+            problems.append([
+                f"This job ran for a very short amount of time ({elapsed_time}). You may want to check that the output was correct or if it exited because of a problem."
+            ])
         return severity, problems
     return inner
 
@@ -386,7 +424,7 @@ slurm_info = SlurmInfo()
 
 username = args.user
 
-print('Showing results for', username)
+print('Showing results for user', username)
 
 if slurm_info.has_current_jobs(username) and (not args.all_jobs):
     display_queued_jobs(username, slurm_info, args.quiet)
