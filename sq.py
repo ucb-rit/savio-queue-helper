@@ -145,10 +145,10 @@ def display_recent_jobs(sacct, quiet):
     df = sacct.copy()
     df['JOBID'] = df['JobID']
     df['Job ID'] = df.apply(display_job_id, axis=1)
-    df['Partition'] = df['NNodes'] + 'x ' + df['Partition']
+    df['Nodes'] = df['NNodes'] + 'x ' + df['Partition']
     df['State'] = df['State'].apply(color_state)
     df['End'] = df['End'].str.replace('T', ' ')
-    df = df[['Job ID', 'JobName', 'Account', 'Partition', 'Elapsed', 'End', 'State']].sort_values(by='End', ascending=False)
+    df = df[['Job ID', 'JobName', 'Account', 'Nodes', 'Elapsed', 'End', 'State']].sort_values(by='End', ascending=False)
     if df.shape[0] == 0:
         print('You have no recent jobs (within the last week).')
     else:
@@ -381,7 +381,7 @@ def display_queued_jobs(username, slurm_info, quiet):
     display_df['Job ID'] = df.apply(display_job_id, axis=1)
     display_df['Name'] = df['NAME']
     display_df['Account'] = df['ACCOUNT']
-    display_df['Partition'] = df['NODES'] + 'x ' + df['PARTITION']
+    display_df['Nodes'] = df['NODES'] + 'x ' + df['PARTITION']
     display_df['QOS'] = df['QOS']
     display_df['Time'] = df['TIME']
     display_df['State'] = df['STATE'].apply(color_state)
