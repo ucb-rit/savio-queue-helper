@@ -144,11 +144,12 @@ def display_time(time):
 def display_recent_jobs(sacct, quiet):
     df = sacct.copy()
     df['JOBID'] = df['JobID']
+    df['Name'] = df['JobName']
     df['Job ID'] = df.apply(display_job_id, axis=1)
     df['Nodes'] = df['NNodes'] + 'x ' + df['Partition']
     df['State'] = df['State'].apply(color_state)
     df['End'] = df['End'].str.replace('T', ' ')
-    df = df[['Job ID', 'JobName', 'Account', 'Nodes', 'Elapsed', 'End', 'State']].sort_values(by='End', ascending=False)
+    df = df[['Job ID', 'Name', 'Account', 'Nodes', 'Elapsed', 'End', 'State']].sort_values(by='End', ascending=False)
     if df.shape[0] == 0:
         print('You have no recent jobs (within the last week).')
     else:
