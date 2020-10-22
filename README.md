@@ -7,8 +7,9 @@ This tool augments the output of squeue with additional information about the st
 ## Features
 - Display pending jobs nicely with additional details
 - Identify and recommend fixes to common problems
-  - QOS limits
+  - QOS limits (group, per-job, CPU, node, etc.)
   - Jobs intersect with reservations
+  - Job ran but exited quickly
 
 ## Usage
 Command line options available using `-h`
