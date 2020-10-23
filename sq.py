@@ -151,9 +151,9 @@ def display_recent_jobs(sacct, quiet):
     df['End'] = df['End'].str.replace('T', ' ')
     df = df[['Job ID', 'Name', 'Account', 'Nodes', 'Elapsed', 'End', 'State']].sort_values(by='End', ascending=False)
     if df.shape[0] == 0:
-        print('You have no recent jobs (within the last week).')
+        print('No recent jobs (within the last week).')
     else:
-        print('Your recent jobs (most recent job first):')
+        print('Recent jobs (most recent job first):')
         print(get_table(df))
         # print('For more information about a previous job, run:', 'sacct -j $JOB_ID')
 
@@ -180,11 +180,14 @@ def parse_tres(tres_str):
         if '=' in kv:
             key, value = kv.split('=')
             tres[key] = int(value)
+        if ':' in kv:
+            key, value = kv.split(':')
+            tres[key] = int(value)
     return tres
 
 def parse_tres_nodes(nodes, tres_per_node, other):
     tres = parse_tres(tres_per_node)
-    tres = { k: v * int(nodes) for k, v in tres.items() }
+    tres = { 'gres/' + k: v * int(nodes) for k, v in tres.items() }
     tres['node'] = int(nodes)
     for key, value in other.items():
         tres[key] = int(value)
@@ -203,7 +206,7 @@ def display_grp_tres(tres):
         if not key.endswith('s') and value != '1':
             key = key + 's'
         tres_strs.append(f"{value} {key}")
-    return ', '.join(tres_strs)
+    return ', '.join(sorted(tres_strs, key=lambda x: x.split(' ')[1]))
 
 def sum_dicts(dicts):
     total = {}
@@ -316,7 +319,7 @@ def identify_problems(slurm_info):
                 "You should cancel this job and resubmit with lower resource requirements or use a different QOS.",
                 suggest_other_qos(slurm_info, pending_job)
             ])
-        if pending_job['REASON'] in ['QOSGrpNodeLimit', 'QOSGrpCpuLimit']:
+        if pending_job['REASON'] in ['QOSGrpNodeLimit', 'QOSGrpCpuLimit', 'QOSGrpGRES']:
             qos_df = slurm_info.qos_df()
             queue = slurm_info.squeue_df()
             qos_df = qos_df[qos_df['Name'] == pending_job['QOS']]
@@ -376,7 +379,7 @@ def display_queued_jobs(username, slurm_info, quiet):
 
     num_running_jobs = df[df['STATE'] == 'RUNNING'].shape[0]
     num_pending_jobs = df[df['STATE'] == 'PENDING'].shape[0]
-    print(f"You have {num_running_jobs} running {'job' if num_running_jobs == 1 else 'jobs'} and {num_pending_jobs} pending {'job' if num_pending_jobs == 1 else 'jobs'} (most recent job first):")
+    print(f"Currently {num_running_jobs} running {'job' if num_running_jobs == 1 else 'jobs'} and {num_pending_jobs} pending {'job' if num_pending_jobs == 1 else 'jobs'} (most recent job first):")
 
     display_df = pd.DataFrame()
     display_df['Job ID'] = df.apply(display_job_id, axis=1)
@@ -405,7 +408,7 @@ def identify_problems_completed(slurm_info):
         severity = SEVERITY['LOW']
         problems = []
         elapsed_time = parse_timelimit(completed_job['Elapsed'])
-        if elapsed_time < datetime.timedelta(minutes=5):
+        if (completed_job['State'] == 'COMPLETED') and elapsed_time < datetime.timedelta(minutes=5):
             severity = max(severity, SEVERITY['MEDIUM'])
             problems.append([
                 f"This job ran for a very short amount of time ({elapsed_time}). You may want to check that the output was correct or if it exited because of a problem."
@@ -431,9 +434,12 @@ if slurm_info.has_current_jobs(username) and (not args.all_jobs):
     display_queued_jobs(username, slurm_info, args.quiet)
     print()
 elif (not args.all_jobs):
-    print('You have no running or queued jobs.')
+    print('No running or queued jobs.')
 
-recent_jobs = get_recent_jobs(username, args.start_time, args.limit)
+try: 
+    recent_jobs = get_recent_jobs(username, args.start_time, args.limit)
+except: 
+    exit(1)
 if recent_jobs.shape[0]:
     recent_jobs['PROBLEMS'] = recent_jobs.apply(identify_problems_completed(slurm_info), axis=1)
 
