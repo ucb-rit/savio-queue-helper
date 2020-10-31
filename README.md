@@ -16,6 +16,8 @@ Command line options available using `-h`
 
 ## Building
 ```bash
+conda create -n sq python=3.8
+conda activate sq
 pip install -r requirements.txt
 pyinstaller --onefile sq.py
 ```
