@@ -1,14 +1,28 @@
+import asyncio
 import argparse
 import datetime
 import subprocess
 import getpass
 import pandas as pd
+import shlex
 from tabulate import tabulate
 from termcolor import colored
+from pathlib import Path
+from os import path
 
-def read_slurm_as_df(slurm_command):
-    stdout = subprocess.check_output(slurm_command).decode('utf-8')
+def run_cmd(cmd):
+    async def inner():
+        proc = await asyncio.create_subprocess_shell(
+            shlex.join(cmd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await proc.communicate()
+        return stdout.decode('utf-8')
+    return asyncio.run(inner())
 
+def freeze(dest_dir, name, data):
+    with open(path.join(dest_dir, name), 'w') as f:
+        f.write(data)
+
+def read_slurm_as_df(stdout):
     # The first line of the data is the column headers, the rest are job data entries
     # Rows are separated by newline, columns are separated by pipe |
     columns, *data = [ row.split('|') for row in stdout.strip().split('\n') ]
@@ -26,25 +40,58 @@ def read_slurm_as_df(slurm_command):
     df.columns = columns
     return df
 
-def get_qos_df():
-    return read_slurm_as_df(['sacctmgr', 'show', 'QOS', '-P'])
+def load_from(load_file):
+    def inner(f):
+        def cmd(load_dir, *args):
+            if load_dir:
+                with open(path.join(load_dir, load_file), 'r') as file:
+                    return file.read()
+            return f(*args)
+        return cmd
+    return inner
 
-def get_squeue_df():
-    return read_slurm_as_df(['squeue', '--array-unique', '--format', '%all'])
+@load_from('qos')
+def qos_cmd():
+    return run_cmd(['sacctmgr', 'show', 'QOS', '-P'])
 
-def get_sprio_df():
-    return read_slurm_as_df(['sprio', '-o', '%A|%c|%F|%i|%J|%N|%Q|%r|%T|%u|%Y'])
+def get_qos_df(stdout):
+    return read_slurm_as_df(stdout)
+
+@load_from('squeue')
+def squeue_cmd():
+    return run_cmd(['squeue', '--array-unique', '--format', '%all'])
+
+def get_squeue_df(stdout):
+    return read_slurm_as_df(stdout)
+
+@load_from('sprio')
+def sprio_cmd():
+    return run_cmd(['sprio', '-o', '%A|%c|%F|%i|%J|%N|%Q|%r|%T|%u|%Y'])
+
+def get_sprio_df(stdout):
+    return read_slurm_as_df(stdout)
+
+@load_from('assoc')
+def assoc_cmd():
+    return run_cmd(['sacctmgr', '-p', 'show', 'associations'])
 
 def get_assoc_df():
-    return read_slurm_as_df(['sacctmgr', '-p', 'show', 'associations'])
+    return read_slurm_as_df(assoc_cmd())
 
-def get_sinfo_df():
-    df = read_slurm_as_df(['sinfo', '--format', '%all'])
+@load_from('sinfo')
+def sinfo_cmd():
+    return run_cmd(['sinfo', '--format', '%all'])
+
+def get_sinfo_df(stdout):
+    df = read_slurm_as_df(stdout)
     df.columns = df.columns.str.strip()
     return df
 
-def get_resv_df():
-    stdout = subprocess.check_output(['scontrol', 'show', 'reservation']).decode('utf-8')
+@load_from('resv')
+def resv_cmd():
+    return run_cmd(['scontrol', 'show', 'reservation'])
+
+def get_resv_df(stdout):
     resvs = []
     for line in stdout.split('\n'):
         if line and not line.startswith(' '):
@@ -59,10 +106,14 @@ def get_resv_df():
     df['EndTime'] = df['EndTime'].apply(datetime.datetime.fromisoformat)
     return df
 
-def get_recent_jobs(username, start_time=None, limit=-1):
+@load_from('recent_jobs')
+def recent_jobs_cmd(username, start_time=None):
     last_week = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
     start_time = start_time or last_week
-    df = read_slurm_as_df(['sacct', '-u', username, '-P', '--format', 'ALL', '-S', start_time])\
+    return run_cmd(['sacct', '-u', username, '-P', '--format', 'ALL', '-S', start_time])
+
+def get_recent_jobs(stdout, limit=-1):
+    df = read_slurm_as_df(stdout) \
         .sort_values(by='End', ascending=False)
     df = df[~df['JobID'].str.endswith('.batch')]
     if limit >= 0:
@@ -71,37 +122,44 @@ def get_recent_jobs(username, start_time=None, limit=-1):
 
 def cache_property(f):
     cached = None
-    def inner(self):
+    def inner(self, *args):
         nonlocal cached
         if cached is None:
-            cached = f()
+            cached = f(self, *args)
         return cached
     return inner
 
 class SlurmInfo:
-    @cache_property
-    def squeue_df():
-        return get_squeue_df()
+    def __init__(self, load_dir):
+        self.load_dir = load_dir
 
     @cache_property
-    def qos_df():
-        return get_qos_df()
+    def squeue_df(self):
+        return get_squeue_df(squeue_cmd(self.load_dir))
 
     @cache_property
-    def sprio_df():
-        return get_sprio_df()
+    def qos_df(self):
+        return get_qos_df(qos_cmd(self.load_dir))
 
     @cache_property
-    def resv_df():
-        return get_resv_df()
+    def sprio_df(self):
+        return get_sprio_df(sprio_cmd(self.load_dir))
 
     @cache_property
-    def sinfo_df():
-        return get_sinfo_df()
+    def resv_df(self):
+        return get_resv_df(resv_cmd(self.load_dir))
+
+    @cache_property
+    def sinfo_df(self):
+        return get_sinfo_df(sinfo_cmd(self.load_dir))
     
     @cache_property
-    def assoc_df():
-        return get_assoc_df()
+    def assoc_df(self):
+        return get_assoc_df(assoc_cmd(self.load_dir))
+
+    @cache_property
+    def get_recent_jobs(self, username, start_time=None, limit=-1):
+        return get_recent_jobs(recent_jobs_cmd(self.load_dir, username, start_time), limit)
 
     def has_current_jobs(self, username):
         return self.squeue_df()[self.squeue_df()['USER'] == username].shape[0] > 0
@@ -111,6 +169,15 @@ class SlurmInfo:
             (self.assoc_df()['Account'] == account) &
             (self.assoc_df()['Partition'] == partition)
         ]['QOS'].str.split(',').values[0]
+    def freeze(self, dest_dir, username, start_time):
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        freeze(dest_dir, 'squeue', squeue_cmd(self.load_dir))
+        freeze(dest_dir, 'qos', qos_cmd(self.load_dir))
+        freeze(dest_dir, 'sprio', sprio_cmd(self.load_dir))
+        freeze(dest_dir, 'resv', resv_cmd(self.load_dir))
+        freeze(dest_dir, 'sinfo', sinfo_cmd(self.load_dir))
+        freeze(dest_dir, 'assoc', assoc_cmd(self.load_dir))
+        freeze(dest_dir, 'recent_jobs', recent_jobs_cmd(self.load_dir, username, start_time))
 
 def get_table(df):
     return tabulate(df, df.columns, tablefmt='pretty', showindex='never')
@@ -422,13 +489,18 @@ parser.add_argument('-a', '--all-jobs', dest='all_jobs', default=False, action='
 parser.add_argument('-q', '--quiet', dest='quiet', default=False, action='store_true', help='Suppress job issue messages')
 parser.add_argument('-S', '--start-time', dest='start_time', help='Filter for jobs created after specified start time', type=str, default=None)
 parser.add_argument('-n', '--limit', dest='limit', type=int, default=8, help='Limit number of jobs in job history table (unlimited = -1, default = 8)')
+parser.add_argument('--freeze', type=str, help='(debug) Freeze Slurm command outputs to a directory')
+parser.add_argument('--load', type=str, help='(debug) Load results from a frozen Slurm output directory')
 args = parser.parse_args()
 
-slurm_info = SlurmInfo()
+slurm_info = SlurmInfo(args.load)
 
 username = args.user
 
 print('Showing results for user', username)
+
+if args.freeze:
+    slurm_info.freeze(args.freeze, username, args.start_time)
 
 if slurm_info.has_current_jobs(username) and (not args.all_jobs):
     display_queued_jobs(username, slurm_info, args.quiet)
@@ -437,7 +509,7 @@ elif (not args.all_jobs):
     print('No running or queued jobs.')
 
 try:
-    recent_jobs = get_recent_jobs(username, args.start_time, args.limit)
+    recent_jobs = slurm_info.get_recent_jobs(username, args.start_time, args.limit)
     if recent_jobs.shape[0]:
         recent_jobs['PROBLEMS'] = recent_jobs.apply(identify_problems_completed(slurm_info), axis=1)
 
