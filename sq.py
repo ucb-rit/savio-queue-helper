@@ -75,8 +75,8 @@ def get_sprio_df(stdout):
 def assoc_cmd():
     return run_cmd(['sacctmgr', '-p', 'show', 'associations'])
 
-def get_assoc_df():
-    return read_slurm_as_df(assoc_cmd())
+def get_assoc_df(stdout):
+    return read_slurm_as_df(stdout)
 
 @load_from('sinfo')
 def sinfo_cmd():
