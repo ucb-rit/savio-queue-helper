@@ -1,4 +1,4 @@
-# Savio Queue Helper
+# `sq`: The Savio Queue Helper
 
 This tool augments the output of squeue with additional information about the state of pending jobs and explains clearly why jobs are waiting.
 
