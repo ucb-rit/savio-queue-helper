@@ -27,6 +27,16 @@ def read_slurm_as_df(stdout):
     # Rows are separated by newline, columns are separated by pipe |
     columns, *data = [ row.split('|') for row in stdout.strip().split('\n') ]
 
+    # Sometimes the fields can contain the pipe symbol |
+    # In this case it is impossible to parse unambiguously so the row is thrown out
+    # (potentially leading to incorrect results).
+    # This could be improved by falling back to other commands (perhaps querying one field at a time)
+    # if the result is not parsable, but this will increase load on Slurm.
+    # 
+    # In the wild, this is seen when the node status (from sinfo) is:
+    #  NHC: check_fs_mount:  /tmp mount options incorrect (should match /(^|,)rw($|,)/)
+    data = [ row for row in data if len(row) == len(columns) ]
+
     df = pd.DataFrame(data=data, columns=columns)
     columns = []
     column_counts = {}
