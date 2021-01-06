@@ -38,7 +38,7 @@ def read_slurm_as_df(stdout):
     #  NHC: check_fs_mount:  /tmp mount options incorrect (should match /(^|,)rw($|,)/)
     filtered_data = [ row for row in data if len(row) == len(columns) ]
     if len(data) != len(filtered_data):
-      print(colored('Warning: Encountered unparsable data from Slurm. Some results may be missing or incorrect.', 'red'), file=sys.stderr)
+      print(colored('Warning: Encountered unparsable data in Slurm command output. Some results shown here may be missing or incorrect. Use `squeue` for direct data from Slurm.', 'white', 'on_red'), file=sys.stderr)
       data = filtered_data
 
     df = pd.DataFrame(data=data, columns=columns)
