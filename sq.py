@@ -5,6 +5,7 @@ import subprocess
 import getpass
 import pandas as pd
 import shlex
+import sys
 from tabulate import tabulate
 from termcolor import colored
 from pathlib import Path
@@ -35,7 +36,10 @@ def read_slurm_as_df(stdout):
     # 
     # In the wild, this is seen when the node status (from sinfo) is:
     #  NHC: check_fs_mount:  /tmp mount options incorrect (should match /(^|,)rw($|,)/)
-    data = [ row for row in data if len(row) == len(columns) ]
+    filtered_data = [ row for row in data if len(row) == len(columns) ]
+    if len(data) != len(filtered_data):
+      print(colored('Warning: Encountered unparsable data from Slurm. Some results may be missing or incorrect.', 'red'), file=sys.stderr)
+      data = filtered_data
 
     df = pd.DataFrame(data=data, columns=columns)
     columns = []
