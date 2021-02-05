@@ -106,6 +106,8 @@ def resv_cmd():
     return run_cmd(['scontrol', 'show', 'reservation'])
 
 def get_resv_df(stdout):
+    if stdout.startswith('No reservations in the system'):
+      return pd.DataFrame(columns=['Nodes','StartTime','EndTime'])
     resvs = []
     for line in stdout.split('\n'):
         if line and not line.startswith(' '):
