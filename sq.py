@@ -83,7 +83,9 @@ def sprio_cmd():
     return run_cmd(['sprio', '-o', '%A|%c|%F|%i|%J|%N|%Q|%r|%T|%u|%Y'])
 
 def get_sprio_df(stdout):
-    return read_slurm_as_df(stdout)
+    df = read_slurm_as_df(stdout)
+    df['PRIORITY'] = df['PRIORITY'].astype(int)
+    return df
 
 @load_from('assoc')
 def assoc_cmd():
