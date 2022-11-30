@@ -281,7 +281,7 @@ def parse_tres_nodes(nodes, tres_per_node, other):
 def parse_tres_queue_job(queue_job):
     return parse_tres_nodes(queue_job['NODES'], queue_job['TRES_PER_NODE'], {
         'cpu': queue_job['CPUS']
-    })
+    }) 
 
 def display_grp_tres(tres):
     tres_strs = []
