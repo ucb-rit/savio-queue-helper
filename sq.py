@@ -266,8 +266,11 @@ def parse_tres(tres_str):
             key, value = kv.split('=')
             tres[key] = int(value)
         if ':' in kv:
-            key, value = kv.split(':')
-            tres[key] = int(value)
+            tmp = kv.split(':')
+            # Modified to account for "gres:V100:2"
+            # key, value = kv.split(':')
+            key = tmp[0]
+            tres[key] = int(tmp[-1])  # int(value)
     return tres
 
 def parse_tres_nodes(nodes, tres_per_node, other):
