@@ -15,6 +15,7 @@ This tool augments the output of squeue with additional information about the st
 Command line options available using `-h`
 
 ## Building
+
 ```bash
 conda create -n sq python=3.8
 conda activate sq
@@ -24,3 +25,12 @@ pyinstaller --onefile sq.py
 
 Then the output binary is located at: `dist/sq`
 
+## Debugging
+
+The most common problem is that the tool encounters output from a Slurm command (e.g., `squeue`, `sinfo`) that it can't parse.
+
+A couple approaches to debugging are:
+
+1) You can clone this repo (presumably into the Savio filesystem) and then run  `python -m pdb sq.py` manually (including inserting `pdb` commands and modifying code in `sq.py`).
+
+2) You can add `--freeze $DIRNAME`, and `sq` will create a new directory at `$DIRNAME` containing all the Slurm command outputs. You can then use the saved files to debug in the future with `--load $DIRNAME`.
