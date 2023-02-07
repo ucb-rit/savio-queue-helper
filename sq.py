@@ -366,7 +366,7 @@ def check_resv_conflicts(pending_job, resv_df, sinfo_df):
         non_resv_nodes = non_resv_nodes - set(resv['Nodes'])
         if delta:
             general_interfering_resvs.append(resv)
-    if len(non_resv_nodes) >= remaining_num_nodes:
+    if len(non_resv_nodes) < remaining_num_nodes:
         interfering_resvs += general_interfering_resvs
 
     return interfering_resvs
@@ -433,7 +433,7 @@ def identify_problems(slurm_info):
                 f"This job is requesting: {job_resources_requested}",
                 suggest_other_qos(slurm_info, pending_job)
             ])
-        if pending_job['REASON'] in ['Priority', 'Resources']:
+        if pending_job['REASON'] in ['Priority', 'Resources'] or re.match("^ReqNodeNotAvail", pending_job['REASON']):
             sprio_df = slurm_info.sprio_df()
             resv_conflicts = check_resv_conflicts(pending_job, slurm_info.resv_df(), slurm_info.sinfo_df())
             if resv_conflicts:
