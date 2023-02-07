@@ -23,10 +23,10 @@ def freeze(dest_dir, name, data):
     with open(path.join(dest_dir, name), 'w') as f:
         f.write(data)
 
-def read_slurm_as_df(stdout):
+def read_slurm_as_df(stdout, sep = '|'):
     # The first line of the data is the column headers, the rest are job data entries
     # Rows are separated by newline, columns are separated by pipe |
-    columns, *data = [ row.split('|') for row in stdout.strip().split('\n') ]
+    columns, *data = [ row.split(sep) for row in stdout.strip().split('\n') ]
 
     # Sometimes the fields can contain the pipe symbol |
     # In this case it is impossible to parse unambiguously so the row is thrown out
@@ -96,10 +96,11 @@ def get_assoc_df(stdout):
 
 @load_from('sinfo')
 def sinfo_cmd():
-    return run_cmd(['sinfo', '--format', '%all'])
+    return run_cmd(['sinfo', '-N', '--format', '%N,%P'])
+    ## return run_cmd(['sinfo', '--format', '%all'])
 
 def get_sinfo_df(stdout):
-    df = read_slurm_as_df(stdout)
+    df = read_slurm_as_df(stdout, ',')
     df.columns = df.columns.str.strip()
     return df
 
