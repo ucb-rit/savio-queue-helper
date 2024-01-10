@@ -16,7 +16,7 @@ def run_cmd(cmd):
         proc = await asyncio.create_subprocess_shell(
             shlex.join(cmd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await proc.communicate()
-        return stdout.decode('utf-8')
+        return stdout.decode('utf-8', 'backslashreplace')
     return asyncio.run(inner())
 
 def freeze(dest_dir, name, data):
