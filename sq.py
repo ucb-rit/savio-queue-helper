@@ -10,6 +10,7 @@ from tabulate import tabulate
 from termcolor import colored
 from pathlib import Path
 from os import path
+import re
 
 def run_cmd(cmd):
     async def inner():
@@ -73,7 +74,7 @@ def get_qos_df(stdout):
 
 @load_from('squeue')
 def squeue_cmd():
-    return run_cmd(['squeue', '--array-unique', '--format', '%all'])
+    return run_cmd(['squeue', '--format', '%all'])
 
 def get_squeue_df(stdout):
     return read_slurm_as_df(stdout)
